@@ -3,6 +3,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, Protecti
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.workbook.defined_name import DefinedName
+from openpyxl.chart import BarChart, Reference
 from datetime import datetime
 
 
@@ -18,6 +19,7 @@ def create_gcp_estimate():
     ws3 = wb.create_sheet('Cloud Storage 세부 견적')
     ws4 = wb.create_sheet('Cloud SQL 세부 견적')
     ws5 = wb.create_sheet('Networking 세부 견적')
+    ws5b = wb.create_sheet('BigQuery 세부 견적')
     ws6 = wb.create_sheet('최종 견적 요약')
     ws7 = wb.create_sheet('단가표')
 
@@ -85,6 +87,16 @@ def create_gcp_estimate():
         ["Storage Snapshot",   0.0260,  "",  ""],
         # Row 18
         ["Network Egress",     0.1200,  "",  ""],
+        # Row 19 (빈행)
+        [],
+        # Row 20
+        ["[BigQuery] — asia-northeast3 기준 USD 단가"],
+        # Row 21
+        ["항목",               "단가",  "",  ""],
+        # Row 22
+        ["BQ Storage Active",  0.0230,  "",  ""],
+        # Row 23
+        ["BQ Query ($/TB)",    6.2500,  "",  ""],
     ]
 
     for row in pricing_data:
@@ -133,6 +145,10 @@ def create_gcp_estimate():
         (16, "외부 인터넷 전송량 (GB/월)",                 100,                        False, None),
         (17, "백업 필요 여부 (스냅샷)",                    "예",                      False, None),
         (18, "동시 접속자 수 (참고용)",                    1000,                       False, None),
+        (19, None,                                       None,                       True,  "선택 서비스 (Optional)"),
+        (20, "BigQuery 사용 여부",                        "아니오",                   False, None),
+        (21, "BigQuery 저장 데이터 (GB)",                 0,                          False, None),
+        (22, "BigQuery 월 쿼리 스캔량 (TB)",              0,                          False, None),
     ]
 
     for (row, label, default, is_section, section_name) in input_rows:
@@ -168,6 +184,7 @@ def create_gcp_estimate():
     ws1.add_data_validation(dv_yesno);   dv_yesno.add(ws1["B14"])
     ws1.add_data_validation(dv_license); dv_license.add(ws1["B15"])
     ws1.add_data_validation(dv_yesno);   dv_yesno.add(ws1["B17"])
+    ws1.add_data_validation(dv_yesno);   dv_yesno.add(ws1["B20"])
 
     # Named Range: EXCHANGE_RATE → 고객입력!B3
     dn = DefinedName('EXCHANGE_RATE', attr_text="'고객 입력'!$B$3")
@@ -452,6 +469,117 @@ def create_gcp_estimate():
 
     # 헤더 고정 및 시트 보호 해제 (견적서는 편집 허용)
     ws6.freeze_panes = 'A6'
+
+    # ---------------------------------------------------------
+    # 10-B. Sheet5b: BigQuery 세부 견적
+    #    B2=사용여부  B3=저장GB  B4=쿼리TB  B5=스토리지단가  B6=쿼리단가  B7=월합계
+    # ---------------------------------------------------------
+    bq_rows = [
+        ["BigQuery 사용 여부",       "='고객 입력'!B20"],
+        ["저장 데이터 (GB)",          "='고객 입력'!B21"],
+        ["월 쿼리 스캔량 (TB)",       "='고객 입력'!B22"],
+        ["스토리지 단가 ($/GB)",      '=VLOOKUP("BQ Storage Active", 단가표!$A$22:$B$23, 2, FALSE)'],
+        ["쿼리 단가 ($/TB)",          '=VLOOKUP("BQ Query ($/TB)", 단가표!$A$22:$B$23, 2, FALSE)'],
+        ["월 합계 (USD)",             '=IF(B2="예", B3*B5 + B4*B6, 0)'],
+    ]
+    setup_detail_sheet(ws5b, bq_rows)
+    ws5b['B7'].number_format = fmt_usd
+
+    # ---------------------------------------------------------
+    # 10-C. Sheet6: BigQuery 선택 서비스 섹션 + 차트 추가
+    # ---------------------------------------------------------
+    # Row 20: 빈행
+    ws6.append([])
+
+    # Row 21: 선택 서비스 헤더
+    ws6.merge_cells('A21:F21')
+    ws6['A21'] = '선택 서비스 (Optional Services)'
+    ws6['A21'].font      = Font(bold=True, color="7B1FA2")
+    ws6['A21'].fill      = PatternFill(start_color="F3E5F5", end_color="F3E5F5", fill_type="solid")
+    ws6['A21'].alignment = center_align
+
+    # Row 22: BigQuery 컬럼 헤더 (재사용)
+    bq_header = ["서비스명 (GCP)", "스펙 / 상세", "수량", "시간당 단가 (USD)", "월 비용 (USD)", "월 비용 (KRW)"]
+    ws6.append(bq_header)
+    for cell in ws6[22]:
+        cell.fill      = PatternFill(start_color="CE93D8", end_color="CE93D8", fill_type="solid")
+        cell.font      = Font(bold=True, color="FFFFFF")
+        cell.alignment = center_align
+        cell.border    = thin_border
+
+    # Row 23: BigQuery 행 (사용 여부 IF 조건부 표시)
+    ws6.append([
+        "BigQuery",
+        "Storage + On-Demand Query",
+        "1 식",
+        "-",
+        "='BigQuery 세부 견적'!B7",
+        "=E23*EXCHANGE_RATE",
+    ])
+    for cell in ws6[23]:
+        cell.border    = thin_border
+        cell.alignment = center_align
+    ws6.cell(row=23, column=5).number_format = fmt_usd
+    ws6.cell(row=23, column=6).number_format = fmt_krw
+
+    # Row 24: Optional 소계 (BigQuery만)
+    ws6.append(["선택 서비스 소계", "", "", "", "=E23", "=F23"])
+    for c in range(1, 7):
+        cell = ws6.cell(row=24, column=c)
+        cell.font   = Font(bold=True)
+        cell.fill   = PatternFill(start_color="E1BEE7", end_color="E1BEE7", fill_type="solid")
+        cell.border = thin_border
+    ws6.cell(row=24, column=5).number_format = fmt_usd
+    ws6.cell(row=24, column=6).number_format = fmt_krw
+
+    # Row 25: 빈행
+    ws6.append([])
+
+    # Row 26: 전체 총합 (필수 + 선택)
+    ws6.merge_cells('A26:D26')
+    ws6['A26'] = '전체 합계 (필수 + 선택 서비스, 종량제 기준)'
+    ws6['A26'].font      = Font(bold=True, size=11)
+    ws6['A26'].fill      = total_fill
+    ws6['A26'].alignment = center_align
+    ws6['E26'] = '=E10+E24'
+    ws6['F26'] = '=F10+F24'
+    ws6['E26'].font = Font(bold=True, size=11, color="137333")
+    ws6['F26'].font = Font(bold=True, size=11, color="137333")
+    ws6['E26'].fill = total_fill
+    ws6['F26'].fill = total_fill
+    ws6['E26'].number_format = fmt_usd
+    ws6['F26'].number_format = fmt_krw
+    for c in range(1, 7):
+        ws6.cell(row=26, column=c).border = thin_border
+
+    # ---------------------------------------------------------
+    # 10-D. Sheet6: 서비스별 비용 Bar Chart 추가
+    # ---------------------------------------------------------
+    chart = BarChart()
+    chart.type          = "col"
+    chart.grouping      = "clustered"
+    chart.title         = "서비스별 월 비용 분포 (On-Demand, USD)"
+    chart.y_axis.title  = "월 비용 (USD)"
+    chart.x_axis.title  = "서비스"
+    chart.style         = 10
+    chart.width         = 22
+    chart.height        = 14
+
+    # 데이터: E6:E9 (4개 서비스 월비용)
+    data = Reference(ws6, min_col=5, min_row=5, max_row=9)
+    # 카테고리: A6:A9 (서비스명)
+    cats = Reference(ws6, min_col=1, min_row=6, max_row=9)
+
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(cats)
+
+    # 차트 색상 (Google Cloud 파란 계열)
+    from openpyxl.chart.series import DataPoint
+    chart.series[0].graphicalProperties.solidFill = "4285F4"
+    chart.series[0].graphicalProperties.line.solidFill = "2962FF"
+
+    # Sheet6 H2 위치에 차트 삽입
+    ws6.add_chart(chart, "H2")
 
     # ---------------------------------------------------------
     # 11. 파일 저장
